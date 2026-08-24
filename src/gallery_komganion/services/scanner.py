@@ -7,6 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from gallery_komganion.config import (
     GalleryRootConfig,
     check_root_availability,
@@ -21,6 +24,12 @@ from gallery_komganion.filesystem.identity import (
 from gallery_komganion.filesystem.natural_sort import (
     naturally_sorted,
 )
+from gallery_komganion.models import (
+    Gallery,
+    GalleryRoot,
+    GalleryStatus,
+    Page,
+)
 
 SUPPORTED_IMAGE_EXTENSIONS = frozenset(
     {
@@ -32,6 +41,14 @@ SUPPORTED_IMAGE_EXTENSIONS = frozenset(
     }
 )
 
+IMAGE_MIME_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
 
 @dataclass(frozen=True)
 class DiscoveredPage:
@@ -39,6 +56,7 @@ class DiscoveredPage:
     filename: str
     size_bytes: int
     modified_ns: int
+    mime_type: str
 
 
 @dataclass(frozen=True)
@@ -67,6 +85,16 @@ class DiscoveryResult:
     root_available: bool
     galleries: tuple[DiscoveredGallery, ...]
     errors: tuple[ScanError, ...]
+
+
+@dataclass(frozen=True)
+class SynchronizationResult:
+    root_id: UUID
+    created: int
+    updated: int
+    marked_missing: int
+    indexed_pages: int
+    errors: tuple[str, ...]
 
 
 def is_supported_image(path: str | Path) -> bool:
@@ -162,6 +190,7 @@ def _discover_pages(
                 filename=path.name,
                 size_bytes=metadata.st_size,
                 modified_ns=metadata.st_mtime_ns,
+                mime_type=IMAGE_MIME_TYPES[path.suffix.casefold()],
             )
         )
 
@@ -172,6 +201,7 @@ def _discover_pages(
             filename=page.filename,
             size_bytes=page.size_bytes,
             modified_ns=page.modified_ns,
+            mime_type=page.mime_type,
         )
         for index, page in enumerate(pages)
     )
@@ -298,4 +328,174 @@ def discover_galleries(
         root_available=True,
         galleries=tuple(galleries),
         errors=tuple(errors),
+    )
+
+
+def _summarize_errors(errors: tuple[ScanError, ...]) -> str | None:
+    if not errors:
+        return None
+
+    displayed = errors[:5]
+    summary = "; ".join(f"{error.relative_path}: {error.message}" for error in displayed)
+
+    remaining = len(errors) - len(displayed)
+
+    if remaining > 0:
+        summary += f"; and {remaining} more error(s)"
+
+    return summary
+
+
+def _synchronize_root(
+    session: Session,
+    configured_root: GalleryRootConfig,
+    discovery: DiscoveryResult,
+    scanned_at: datetime,
+) -> GalleryRoot:
+    root = session.get(GalleryRoot, configured_root.id)
+
+    if root is None:
+        root = GalleryRoot(
+            id=configured_root.id,
+            name=configured_root.name,
+            path=configured_root.path.as_posix(),
+            trash_path=configured_root.trash_path.as_posix(),
+        )
+        session.add(root)
+
+    root.name = configured_root.name
+    root.path = configured_root.path.as_posix()
+    root.trash_path = configured_root.trash_path.as_posix()
+    root.enabled = configured_root.enabled
+    root.available = discovery.root_available
+    root.last_scan_at = scanned_at
+    root.last_error = _summarize_errors(discovery.errors)
+
+    return root
+
+
+def synchronize_discovery(
+    session: Session,
+    configured_root: GalleryRootConfig,
+    discovery: DiscoveryResult,
+    *,
+    scanned_at: datetime | None = None,
+) -> SynchronizationResult:
+    if discovery.root_id != configured_root.id:
+        raise ValueError("Discovery result does not belong to the configured root")
+
+    scan_time = scanned_at or datetime.now(UTC)
+
+    root = _synchronize_root(
+        session,
+        configured_root,
+        discovery,
+        scan_time,
+    )
+    session.flush()
+
+    synchronization_errors: list[str] = []
+
+    if not discovery.root_available:
+        return SynchronizationResult(
+            root_id=configured_root.id,
+            created=0,
+            updated=0,
+            marked_missing=0,
+            indexed_pages=0,
+            errors=tuple(error.message for error in discovery.errors),
+        )
+
+    existing_galleries = session.scalars(
+        select(Gallery).where(Gallery.root_id == configured_root.id)
+    ).all()
+    existing_by_id = {gallery.id: gallery for gallery in existing_galleries}
+
+    # Temporarily move renamed records out of the unique relative-path
+    # namespace. This also supports two galleries swapping directory names.
+    renamed_galleries = [
+        (existing_by_id[gallery.id], gallery)
+        for gallery in discovery.galleries
+        if gallery.id in existing_by_id
+        and existing_by_id[gallery.id].relative_path != gallery.relative_path
+    ]
+
+    for stored_gallery, _ in renamed_galleries:
+        stored_gallery.relative_path = f"__pending__:{stored_gallery.id}"
+
+    if renamed_galleries:
+        session.flush()
+
+    created = 0
+    updated = 0
+    indexed_pages = 0
+    seen_gallery_ids: set[UUID] = set()
+
+    for discovered in discovery.galleries:
+        existing_anywhere = session.get(Gallery, discovered.id)
+
+        if existing_anywhere is not None and existing_anywhere.root_id != configured_root.id:
+            synchronization_errors.append(
+                f"Gallery ID {discovered.id} is already used by another configured root"
+            )
+            continue
+
+        gallery = existing_by_id.get(discovered.id)
+
+        if gallery is None:
+            gallery = Gallery(
+                id=discovered.id,
+                root=root,
+                relative_path=discovered.relative_path,
+                title=discovered.title,
+            )
+            session.add(gallery)
+            created += 1
+        else:
+            gallery.pages.clear()
+            session.flush()
+            updated += 1
+
+        gallery.relative_path = discovered.relative_path
+        gallery.title = discovered.title
+        gallery.status = GalleryStatus.ACTIVE
+        gallery.page_count = discovered.page_count
+        gallery.modified_at = discovered.modified_at
+        gallery.last_scanned_at = scan_time
+        gallery.trashed_at = None
+        gallery.original_relative_path = None
+        gallery.trash_relative_path = None
+
+        gallery.pages.extend(
+            Page(
+                page_index=page.index,
+                relative_path=page.filename,
+                size_bytes=page.size_bytes,
+                modified_ns=page.modified_ns,
+                mime_type=page.mime_type,
+            )
+            for page in discovered.pages
+        )
+
+        indexed_pages += discovered.page_count
+        seen_gallery_ids.add(discovered.id)
+
+    marked_missing = 0
+
+    # Any filesystem error can make a gallery temporarily invisible.
+    # Only mark missing galleries after a completely successful traversal.
+    if not discovery.errors and not synchronization_errors:
+        for gallery in existing_galleries:
+            if gallery.id not in seen_gallery_ids and gallery.status == GalleryStatus.ACTIVE:
+                gallery.status = GalleryStatus.MISSING
+                gallery.last_scanned_at = scan_time
+                marked_missing += 1
+
+    return SynchronizationResult(
+        root_id=configured_root.id,
+        created=created,
+        updated=updated,
+        marked_missing=marked_missing,
+        indexed_pages=indexed_pages,
+        errors=tuple(synchronization_errors),
     )
