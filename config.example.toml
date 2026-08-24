@@ -1,0 +1,13 @@
+[server]
+host = "127.0.0.1"
+port = 8000
+
+[storage]
+database_path = "./data/gallery-komganion.sqlite3"
+thumbnail_directory = "./data/thumbnails"
+
+[[gallery_roots]]
+name = "Example Galleries"
+path = "D:/Galleries"
+trash_path = "D:/GalleryKomganionTrash"
+enabled = true
