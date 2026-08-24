@@ -1,8 +1,15 @@
 from fastapi import FastAPI
 
+from gallery_komganion.api.galleries import router as galleries_router
+
 app = FastAPI(
     title="Gallery Komganion",
     version="0.1.0",
+)
+
+app.include_router(
+    galleries_router,
+    prefix="/api/v1",
 )
 
 

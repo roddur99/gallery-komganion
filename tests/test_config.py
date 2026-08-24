@@ -10,7 +10,6 @@ from gallery_komganion.config import (
     load_config,
 )
 
-
 ROOT_ID = "55280de7-869f-4898-b48b-dc519de969bc"
 
 
