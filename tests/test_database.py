@@ -16,6 +16,7 @@ from gallery_komganion.models import (
     Gallery,
     GalleryRoot,
     GalleryStatus,
+    Page,
 )
 
 
@@ -194,3 +195,139 @@ def test_session_scope_rolls_back_on_error(
 
     with factory() as session:
         assert session.get(GalleryRoot, root_id) is None
+
+
+def test_pages_are_stored_in_page_order(
+    database: tuple[Engine, sessionmaker[Session]],
+) -> None:
+    _, factory = database
+    root_id = uuid4()
+    gallery_id = uuid4()
+
+    with factory.begin() as session:
+        root = GalleryRoot(
+            id=root_id,
+            name="Test Root",
+            path="C:/Galleries",
+            trash_path="C:/Trash",
+        )
+        gallery = Gallery(
+            id=gallery_id,
+            root=root,
+            relative_path="Gallery",
+            title="Gallery",
+        )
+        gallery.pages = [
+            Page(
+                page_index=1,
+                relative_path="2.jpg",
+                size_bytes=200,
+                modified_ns=2,
+                mime_type="image/jpeg",
+            ),
+            Page(
+                page_index=0,
+                relative_path="1.jpg",
+                size_bytes=100,
+                modified_ns=1,
+                mime_type="image/jpeg",
+            ),
+        ]
+
+        session.add(root)
+
+    with factory() as session:
+        stored_gallery = session.get(Gallery, gallery_id)
+
+        assert stored_gallery is not None
+        assert [page.relative_path for page in stored_gallery.pages] == [
+            "1.jpg",
+            "2.jpg",
+        ]
+
+
+def test_deleting_gallery_cascades_to_pages(
+    database: tuple[Engine, sessionmaker[Session]],
+) -> None:
+    _, factory = database
+    root_id = uuid4()
+    gallery_id = uuid4()
+
+    with factory.begin() as session:
+        root = GalleryRoot(
+            id=root_id,
+            name="Test Root",
+            path="C:/Galleries",
+            trash_path="C:/Trash",
+        )
+        gallery = Gallery(
+            id=gallery_id,
+            root=root,
+            relative_path="Gallery",
+            title="Gallery",
+        )
+        gallery.pages.append(
+            Page(
+                page_index=0,
+                relative_path="1.jpg",
+                size_bytes=100,
+                modified_ns=1,
+                mime_type="image/jpeg",
+            )
+        )
+
+        session.add(root)
+
+    with factory.begin() as session:
+        gallery = session.get(Gallery, gallery_id)
+        assert gallery is not None
+        session.delete(gallery)
+
+    with factory() as session:
+        assert session.scalars(select(Page)).all() == []
+
+
+def test_duplicate_page_index_is_rejected(
+    database: tuple[Engine, sessionmaker[Session]],
+) -> None:
+    _, factory = database
+    root_id = uuid4()
+    gallery_id = uuid4()
+
+    with factory.begin() as session:
+        root = GalleryRoot(
+            id=root_id,
+            name="Test Root",
+            path="C:/Galleries",
+            trash_path="C:/Trash",
+        )
+        gallery = Gallery(
+            id=gallery_id,
+            root=root,
+            relative_path="Gallery",
+            title="Gallery",
+        )
+        session.add(root)
+        session.add(gallery)
+
+    with pytest.raises(IntegrityError), factory.begin() as session:
+        session.add_all(
+            [
+                Page(
+                    gallery_id=gallery_id,
+                    page_index=0,
+                    relative_path="1.jpg",
+                    size_bytes=100,
+                    modified_ns=1,
+                    mime_type="image/jpeg",
+                ),
+                Page(
+                    gallery_id=gallery_id,
+                    page_index=0,
+                    relative_path="2.jpg",
+                    size_bytes=100,
+                    modified_ns=2,
+                    mime_type="image/jpeg",
+                ),
+            ]
+        )

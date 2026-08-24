@@ -5,6 +5,7 @@ from enum import StrEnum
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -191,4 +192,77 @@ class Gallery(Base):
 
     root: Mapped[GalleryRoot] = relationship(
         back_populates="galleries",
+    )
+    pages: Mapped[list[Page]] = relationship(
+        back_populates="gallery",
+        cascade="all, delete-orphan",
+        order_by="Page.page_index",
+    )
+
+
+class Page(Base):
+    __tablename__ = "pages"
+    __table_args__ = (
+        UniqueConstraint(
+            "gallery_id",
+            "page_index",
+            name="uq_pages_gallery_page_index",
+        ),
+        UniqueConstraint(
+            "gallery_id",
+            "relative_path",
+            name="uq_pages_gallery_relative_path",
+        ),
+        CheckConstraint(
+            "page_index >= 0",
+            name="ck_pages_page_index_nonnegative",
+        ),
+        CheckConstraint(
+            "size_bytes >= 0",
+            name="ck_pages_size_bytes_nonnegative",
+        ),
+        Index("ix_pages_gallery_id", "gallery_id"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        Integer,
+        primary_key=True,
+        autoincrement=True,
+    )
+    gallery_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("galleries.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    page_index: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+    relative_path: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+    size_bytes: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    modified_ns: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    mime_type: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+    width: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    height: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    gallery: Mapped[Gallery] = relationship(
+        back_populates="pages",
     )
