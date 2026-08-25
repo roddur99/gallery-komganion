@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from enum import IntEnum
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
+from time import time_ns
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -29,6 +31,7 @@ from gallery_komganion.schemas import (
     GallerySummary,
     PageListResponse,
     PageSummary,
+    TrashedPageResponse,
 )
 from gallery_komganion.services.thumbnails import (
     create_thumbnail,
@@ -322,6 +325,7 @@ def list_gallery_pages(
                 page_index=page.page_index,
                 filename=page.relative_path,
                 size_bytes=page.size_bytes,
+                modified_at=datetime.fromtimestamp(page.modified_ns / 1_000_000_000, UTC),
                 mime_type=page.mime_type,
                 width=page.width,
                 height=page.height,
@@ -415,3 +419,106 @@ def stream_gallery_page(
         path=image_path,
         media_type=page.mime_type,
     )
+
+@router.delete(
+    "/{gallery_id}/pages/{page_index}",
+    response_model=TrashedPageResponse,
+)
+def trash_gallery_page(
+    gallery_id: UUID,
+    page_index: int,
+    session: SessionDependency,
+) -> TrashedPageResponse:
+    gallery, root = _get_readable_gallery(
+        session,
+        gallery_id,
+    )
+    page = _get_page(
+        session,
+        gallery,
+        page_index,
+    )
+    image_path = _resolve_page_path(
+        root,
+        gallery,
+        page,
+    )
+
+    if gallery.relative_path == ".":
+        stored_path = page.relative_path
+    else:
+        stored_path = f"{gallery.relative_path}/{page.relative_path}"
+
+    trash_root = Path(root.trash_path)
+
+    try:
+        trash_root.mkdir(parents=True, exist_ok=True)
+        trash_relative_path = (
+            f"pages/{gallery.id}/{time_ns()}/{stored_path}"
+        )
+        trash_path = safe_join(
+            trash_root,
+            trash_relative_path,
+            must_exist=False,
+        )
+        trash_path.parent.mkdir(parents=True, exist_ok=True)
+        image_path.replace(trash_path)
+    except (UnsafePathError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Page could not be moved to the trash directory",
+        ) from exc
+
+    filename = page.relative_path
+    later_pages = session.scalars(
+        select(Page)
+        .where(
+            Page.gallery_id == gallery.id,
+            Page.page_index > page.page_index,
+        )
+        .order_by(Page.page_index)
+    ).all()
+
+    try:
+        session.delete(page)
+        session.flush()
+
+        # Use a temporary negative namespace to avoid collisions with the
+        # unique (gallery_id, page_index) constraint during reindexing.
+        for later_page in later_pages:
+            later_page.page_index = -(later_page.page_index + 1)
+
+        session.flush()
+
+        for later_page in later_pages:
+            later_page.page_index = -later_page.page_index - 2
+
+        gallery.page_count -= 1
+        gallery.modified_at = datetime.now(UTC)
+        session.commit()
+    except Exception:
+        session.rollback()
+
+        try:
+            image_path.parent.mkdir(parents=True, exist_ok=True)
+            trash_path.replace(image_path)
+        except OSError:
+            pass
+
+        raise
+
+    remaining_pages = gallery.page_count
+    next_page_index = (
+        min(page_index, remaining_pages - 1)
+        if remaining_pages > 0
+        else None
+    )
+
+    return TrashedPageResponse(
+        gallery_id=gallery.id,
+        filename=filename,
+        trash_relative_path=trash_relative_path,
+        remaining_pages=remaining_pages,
+        next_page_index=next_page_index,
+    )
+
