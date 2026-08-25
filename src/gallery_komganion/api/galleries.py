@@ -196,7 +196,7 @@ def _page_image_url(
 ) -> str:
     return (
         f"/api/v1/galleries/{gallery_id}/pages/{page.page_index}"
-        f"?v={page.modified_ns}"
+        f"?v={page.id}-{page.modified_ns}"
     )
 
 
