@@ -192,9 +192,12 @@ def _resolve_page_path(
 
 def _page_image_url(
     gallery_id: UUID,
-    page_index: int,
+    page: Page,
 ) -> str:
-    return f"/api/v1/galleries/{gallery_id}/pages/{page_index}"
+    return (
+        f"/api/v1/galleries/{gallery_id}/pages/{page.page_index}"
+        f"?v={page.modified_ns}"
+    )
 
 
 def _page_thumbnail_url(
@@ -331,7 +334,7 @@ def list_gallery_pages(
                 height=page.height,
                 image_url=_page_image_url(
                     gallery.id,
-                    page.page_index,
+                    page,
                 ),
                 thumbnail_url=_page_thumbnail_url(
                     gallery.id,
