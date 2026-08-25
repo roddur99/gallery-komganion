@@ -253,7 +253,9 @@ def test_list_gallery_pages(api_client: TestClient) -> None:
     ]
     assert payload["items"][0]["mimeType"] == "image/jpeg"
     assert payload["items"][0]["modifiedAt"] is not None
-    assert payload["items"][0]["imageUrl"].endswith(f"/{FIRST_GALLERY_ID}/pages/0")
+    assert payload["items"][0]["imageUrl"].endswith(
+        f"/{FIRST_GALLERY_ID}/pages/0?v=1"
+    )
     assert payload["items"][0]["thumbnailUrl"].endswith(
         f"/{FIRST_GALLERY_ID}/pages/0/thumbnail?size=512&v=1"
     )
