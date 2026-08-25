@@ -94,7 +94,7 @@ def seed_database(
             id=ROOT_ID,
             name="Test Root",
             path=gallery_root.as_posix(),
-            trash_path="C:/Trash",
+            trash_path=(gallery_root.parent / "trash").as_posix(),
             available=True,
         )
 
@@ -252,6 +252,7 @@ def test_list_gallery_pages(api_client: TestClient) -> None:
         "2.png",
     ]
     assert payload["items"][0]["mimeType"] == "image/jpeg"
+    assert payload["items"][0]["modifiedAt"] is not None
     assert payload["items"][0]["imageUrl"].endswith(f"/{FIRST_GALLERY_ID}/pages/0")
     assert payload["items"][0]["thumbnailUrl"].endswith(
         f"/{FIRST_GALLERY_ID}/pages/0/thumbnail?size=512&v=1"
@@ -378,3 +379,50 @@ def test_missing_thumbnail_page_returns_404(
     response = api_client.get(f"/api/v1/galleries/{FIRST_GALLERY_ID}/pages/99/thumbnail")
 
     assert response.status_code == 404
+
+def test_trash_gallery_page(
+    api_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    response = api_client.delete(
+        f"/api/v1/galleries/{FIRST_GALLERY_ID}/pages/0"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["filename"] == "1.jpg"
+    assert payload["remainingPages"] == 1
+    assert payload["nextPageIndex"] == 0
+
+    original = (
+        tmp_path
+        / "galleries"
+        / "Artists"
+        / "Alice"
+        / "Beach Set"
+        / "1.jpg"
+    )
+    assert not original.exists()
+
+    trashed = tmp_path / "trash" / payload["trashRelativePath"]
+    assert trashed.read_bytes() == b"first image"
+
+    pages_response = api_client.get(
+        f"/api/v1/galleries/{FIRST_GALLERY_ID}/pages"
+    )
+    assert pages_response.status_code == 200
+    assert [
+        (item["pageIndex"], item["filename"])
+        for item in pages_response.json()["items"]
+    ] == [(0, "2.png")]
+
+
+def test_trash_missing_gallery_page_returns_404(
+    api_client: TestClient,
+) -> None:
+    response = api_client.delete(
+        f"/api/v1/galleries/{FIRST_GALLERY_ID}/pages/99"
+    )
+
+    assert response.status_code == 404
+
