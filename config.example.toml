@@ -7,6 +7,7 @@ database_path = "./data/gallery-komganion.sqlite3"
 thumbnail_directory = "./data/thumbnails"
 
 [[gallery_roots]]
+id = "7372564f-3905-413e-a152-be90e8499f8f"
 name = "Example Galleries"
 path = "D:/Galleries"
 trash_path = "D:/GalleryKomganionTrash"
