@@ -21,6 +21,9 @@ dependencies = [
     "python-multipart",
 ]
 
+[project.scripts]
+gallery-komganion = "gallery_komganion.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "httpx2",
