@@ -483,15 +483,18 @@ def trash_gallery_page(
         session.delete(page)
         session.flush()
 
-        # Use a temporary negative namespace to avoid collisions with the
-        # unique (gallery_id, page_index) constraint during reindexing.
+        # Move later pages above the current index range before shifting
+        # them down. Temporary indexes must remain nonnegative because the
+        # database enforces ck_pages_page_index_nonnegative.
+        temporary_offset = gallery.page_count
+
         for later_page in later_pages:
-            later_page.page_index = -(later_page.page_index + 1)
+            later_page.page_index += temporary_offset
 
         session.flush()
 
         for later_page in later_pages:
-            later_page.page_index = -later_page.page_index - 2
+            later_page.page_index -= temporary_offset + 1
 
         gallery.page_count -= 1
         gallery.modified_at = datetime.now(UTC)
