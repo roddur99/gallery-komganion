@@ -19,10 +19,12 @@ from gallery_komganion.models import (
     GalleryRoot,
     Page,
 )
+from gallery_komganion.security import get_api_token
 
 ROOT_ID = UUID("55280de7-869f-4898-b48b-dc519de969bc")
 FIRST_GALLERY_ID = UUID("bb32cc04-8120-4bb5-91b2-abfb4cc61d80")
 SECOND_GALLERY_ID = UUID("078a3d0d-c52b-4855-bc07-ece0796ca669")
+TEST_API_TOKEN = "test-token-that-is-at-least-32-characters"
 
 
 @pytest.fixture
@@ -40,7 +42,14 @@ def api_client(tmp_path: Path) -> Generator[TestClient, None, None]:
 
     app.dependency_overrides[get_session] = override_session
 
-    with TestClient(app) as client:
+    app.dependency_overrides[get_api_token] = lambda: TEST_API_TOKEN
+
+    with TestClient(
+        app,
+        headers={
+            "Authorization": f"Bearer {TEST_API_TOKEN}",
+        },
+    ) as client:
         yield client
 
     app.dependency_overrides.clear()
@@ -250,3 +259,41 @@ def test_negative_page_returns_404(
     response = api_client.get(f"/api/v1/galleries/{FIRST_GALLERY_ID}/pages/-1")
 
     assert response.status_code == 404
+
+
+def test_gallery_api_requires_token(
+    api_client: TestClient,
+) -> None:
+    response = api_client.get(
+        "/api/v1/galleries",
+        headers={"Authorization": ""},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid or missing API token"}
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+def test_gallery_api_rejects_invalid_token(
+    api_client: TestClient,
+) -> None:
+    response = api_client.get(
+        "/api/v1/galleries",
+        headers={
+            "Authorization": "Bearer incorrect-token",
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_health_endpoint_does_not_require_token(
+    api_client: TestClient,
+) -> None:
+    response = api_client.get(
+        "/api/v1/health",
+        headers={"Authorization": ""},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
