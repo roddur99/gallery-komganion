@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from pathlib import PurePosixPath
+from enum import IntEnum
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
+from PIL import UnidentifiedImageError
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from gallery_komganion.dependencies import get_session
+from gallery_komganion.config import AppConfig
+from gallery_komganion.dependencies import get_config, get_session
 from gallery_komganion.filesystem.containment import (
     UnsafePathError,
     safe_join,
@@ -27,6 +30,9 @@ from gallery_komganion.schemas import (
     PageListResponse,
     PageSummary,
 )
+from gallery_komganion.services.thumbnails import (
+    create_thumbnail,
+)
 
 router = APIRouter(
     prefix="/galleries",
@@ -34,6 +40,8 @@ router = APIRouter(
 )
 
 SessionDependency = Annotated[Session, Depends(get_session)]
+ConfigDependency = Annotated[AppConfig, Depends(get_config)]
+
 GallerySort = Literal[
     "title",
     "modifiedAt",
@@ -43,12 +51,27 @@ GallerySort = Literal[
 SortDirection = Literal["asc", "desc"]
 
 
+class ThumbnailSize(IntEnum):
+    SMALL = 256
+    MEDIUM = 512
+    LARGE = 1024
+
+
 def _category_path(relative_path: str) -> list[str]:
     if relative_path == ".":
         return []
 
     path = PurePosixPath(relative_path)
     return list(path.parts[:-1])
+
+
+def _gallery_cover_url(gallery: Gallery) -> str | None:
+    if gallery.page_count < 1:
+        return None
+
+    version = int(gallery.modified_at.timestamp() * 1_000_000)
+
+    return f"/api/v1/galleries/{gallery.id}/pages/0/thumbnail?size=512&v={version}"
 
 
 def _gallery_summary(gallery: Gallery) -> GallerySummary:
@@ -62,6 +85,7 @@ def _gallery_summary(gallery: Gallery) -> GallerySummary:
         detected_at=gallery.detected_at,
         status=gallery.status.value,
         can_delete=gallery.status == GalleryStatus.ACTIVE,
+        cover_url=_gallery_cover_url(gallery),
     )
 
 
@@ -98,6 +122,87 @@ def _get_readable_gallery(
         )
 
     return gallery, root
+
+
+def _get_page(
+    session: Session,
+    gallery: Gallery,
+    page_index: int,
+) -> Page:
+    if page_index < 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Page not found",
+        )
+
+    page = session.scalar(
+        select(Page).where(
+            Page.gallery_id == gallery.id,
+            Page.page_index == page_index,
+        )
+    )
+
+    if page is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Page not found",
+        )
+
+    return page
+
+
+def _resolve_page_path(
+    root: GalleryRoot,
+    gallery: Gallery,
+    page: Page,
+) -> Path:
+    if gallery.relative_path == ".":
+        stored_path = page.relative_path
+    else:
+        stored_path = f"{gallery.relative_path}/{page.relative_path}"
+
+    try:
+        image_path = safe_join(
+            root.path,
+            stored_path,
+            must_exist=True,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Indexed image file was not found",
+        ) from exc
+    except (UnsafePathError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Indexed image path is unsafe or unavailable",
+        ) from exc
+
+    if not image_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Indexed page is not a file",
+        )
+
+    return image_path
+
+
+def _page_image_url(
+    gallery_id: UUID,
+    page_index: int,
+) -> str:
+    return f"/api/v1/galleries/{gallery_id}/pages/{page_index}"
+
+
+def _page_thumbnail_url(
+    gallery_id: UUID,
+    page: Page,
+) -> str:
+    return (
+        f"/api/v1/galleries/{gallery_id}/pages/"
+        f"{page.page_index}/thumbnail"
+        f"?size=512&v={page.modified_ns}"
+    )
 
 
 def _escape_like(value: str) -> str:
@@ -220,10 +325,65 @@ def list_gallery_pages(
                 mime_type=page.mime_type,
                 width=page.width,
                 height=page.height,
-                image_url=(f"/api/v1/galleries/{gallery.id}/pages/{page.page_index}"),
+                image_url=_page_image_url(
+                    gallery.id,
+                    page.page_index,
+                ),
+                thumbnail_url=_page_thumbnail_url(
+                    gallery.id,
+                    page,
+                ),
             )
             for page in pages
         ],
+    )
+
+
+@router.get(
+    "/{gallery_id}/pages/{page_index}/thumbnail",
+    response_class=FileResponse,
+)
+def stream_gallery_thumbnail(
+    gallery_id: UUID,
+    page_index: int,
+    session: SessionDependency,
+    config: ConfigDependency,
+    size: Annotated[ThumbnailSize, Query()] = (ThumbnailSize.MEDIUM),
+) -> FileResponse:
+    gallery, root = _get_readable_gallery(
+        session,
+        gallery_id,
+    )
+    page = _get_page(
+        session,
+        gallery,
+        page_index,
+    )
+    image_path = _resolve_page_path(
+        root,
+        gallery,
+        page,
+    )
+
+    try:
+        thumbnail_path = create_thumbnail(
+            source_path=image_path,
+            thumbnail_directory=(config.storage.thumbnail_directory),
+            gallery_id=gallery.id,
+            page_index=page.page_index,
+            modified_ns=page.modified_ns,
+            size=size,
+        )
+    except (OSError, UnidentifiedImageError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Thumbnail could not be generated",
+        ) from exc
+
+    return FileResponse(
+        path=thumbnail_path,
+        media_type="image/webp",
+        headers={"Cache-Control": ("private, max-age=31536000, immutable")},
     )
 
 
@@ -236,57 +396,20 @@ def stream_gallery_page(
     page_index: int,
     session: SessionDependency,
 ) -> FileResponse:
-    if page_index < 0:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Page not found",
-        )
-
     gallery, root = _get_readable_gallery(
         session,
         gallery_id,
     )
-
-    page = session.scalar(
-        select(Page).where(
-            Page.gallery_id == gallery.id,
-            Page.page_index == page_index,
-        )
+    page = _get_page(
+        session,
+        gallery,
+        page_index,
     )
-
-    if page is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Page not found",
-        )
-
-    if gallery.relative_path == ".":
-        stored_path = page.relative_path
-    else:
-        stored_path = f"{gallery.relative_path}/{page.relative_path}"
-
-    try:
-        image_path = safe_join(
-            root.path,
-            stored_path,
-            must_exist=True,
-        )
-    except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Indexed image file was not found",
-        ) from exc
-    except (UnsafePathError, OSError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Indexed image path is unsafe or unavailable",
-        ) from exc
-
-    if not image_path.is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Indexed page is not a file",
-        )
+    image_path = _resolve_page_path(
+        root,
+        gallery,
+        page,
+    )
 
     return FileResponse(
         path=image_path,

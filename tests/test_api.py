@@ -1,18 +1,24 @@
 from collections.abc import Generator
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy.orm import Session, sessionmaker
 
+from gallery_komganion.config import AppConfig, StorageConfig
 from gallery_komganion.database import (
     Base,
     create_session_factory,
     create_sqlite_engine,
 )
-from gallery_komganion.dependencies import get_session
+from gallery_komganion.dependencies import (
+    get_config,
+    get_session,
+)
 from gallery_komganion.main import app
 from gallery_komganion.models import (
     Gallery,
@@ -32,6 +38,13 @@ def api_client(tmp_path: Path) -> Generator[TestClient, None, None]:
     engine = create_sqlite_engine(tmp_path / "test.sqlite3")
     Base.metadata.create_all(engine)
     factory = create_session_factory(engine)
+    test_config = AppConfig(
+        storage=StorageConfig(
+            database_path=tmp_path / "test.sqlite3",
+            thumbnail_directory=tmp_path / "thumbnails",
+        )
+    )
+    app.dependency_overrides[get_config] = lambda: test_config
 
     gallery_root = tmp_path / "galleries"
     seed_database(factory, gallery_root)
@@ -69,7 +82,11 @@ def seed_database(
     second_directory.mkdir(parents=True)
 
     (first_directory / "1.jpg").write_bytes(b"first image")
-    (first_directory / "2.png").write_bytes(b"second image")
+    Image.new(
+        mode="RGB",
+        size=(1200, 800),
+        color=(40, 100, 180),
+    ).save(first_directory / "2.png")
     (second_directory / "1.webp").write_bytes(b"city image")
 
     with factory.begin() as session:
@@ -159,6 +176,7 @@ def test_list_galleries(api_client: TestClient) -> None:
     ]
     assert "relativePath" in payload["items"][0]
     assert "pageCount" in payload["items"][0]
+    assert f"/{FIRST_GALLERY_ID}/pages/0/thumbnail" in payload["items"][0]["coverUrl"]
 
 
 def test_search_galleries(api_client: TestClient) -> None:
@@ -235,6 +253,12 @@ def test_list_gallery_pages(api_client: TestClient) -> None:
     ]
     assert payload["items"][0]["mimeType"] == "image/jpeg"
     assert payload["items"][0]["imageUrl"].endswith(f"/{FIRST_GALLERY_ID}/pages/0")
+    assert payload["items"][0]["thumbnailUrl"].endswith(
+        f"/{FIRST_GALLERY_ID}/pages/0/thumbnail?size=512&v=1"
+    )
+    assert payload["items"][1]["thumbnailUrl"].endswith(
+        f"/{FIRST_GALLERY_ID}/pages/1/thumbnail?size=512&v=2"
+    )
 
 
 def test_stream_gallery_page(api_client: TestClient) -> None:
@@ -297,3 +321,60 @@ def test_health_endpoint_does_not_require_token(
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_stream_gallery_thumbnail(
+    api_client: TestClient,
+) -> None:
+
+    response = api_client.get(
+        f"/api/v1/galleries/{FIRST_GALLERY_ID}/pages/1/thumbnail",
+        params={"size": 256},
+    )
+
+    assert response.status_code == 200, response.json()
+    assert response.headers["content-type"] == "image/webp"
+    assert "immutable" in response.headers["cache-control"]
+
+    with Image.open(BytesIO(response.content)) as thumbnail:
+        assert thumbnail.format == "WEBP"
+        assert thumbnail.width <= 256
+        assert thumbnail.height <= 256
+
+
+def test_thumbnail_is_cached(
+    api_client: TestClient,
+) -> None:
+    url = f"/api/v1/galleries/{FIRST_GALLERY_ID}/pages/1/thumbnail"
+
+    first_response = api_client.get(
+        url,
+        params={"size": 512},
+    )
+    second_response = api_client.get(
+        url,
+        params={"size": 512},
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.content == second_response.content
+
+
+def test_invalid_thumbnail_size_returns_422(
+    api_client: TestClient,
+) -> None:
+    response = api_client.get(
+        f"/api/v1/galleries/{FIRST_GALLERY_ID}/pages/1/thumbnail",
+        params={"size": 300},
+    )
+
+    assert response.status_code == 422
+
+
+def test_missing_thumbnail_page_returns_404(
+    api_client: TestClient,
+) -> None:
+    response = api_client.get(f"/api/v1/galleries/{FIRST_GALLERY_ID}/pages/99/thumbnail")
+
+    assert response.status_code == 404

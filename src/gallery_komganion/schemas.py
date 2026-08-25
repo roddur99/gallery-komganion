@@ -28,6 +28,7 @@ class GallerySummary(ApiModel):
     detected_at: datetime
     status: str
     can_delete: bool
+    cover_url: str | None
 
 
 class GalleryDetail(GallerySummary):
@@ -49,6 +50,7 @@ class PageSummary(ApiModel):
     width: int | None
     height: int | None
     image_url: str
+    thumbnail_url: str
 
 
 class PageListResponse(ApiModel):
