@@ -46,6 +46,7 @@ class PageSummary(ApiModel):
     page_index: int
     filename: str
     size_bytes: int
+    modified_at: datetime
     mime_type: str
     width: int | None
     height: int | None
@@ -56,3 +57,11 @@ class PageSummary(ApiModel):
 class PageListResponse(ApiModel):
     gallery_id: UUID
     items: list[PageSummary]
+
+
+class TrashedPageResponse(ApiModel):
+    gallery_id: UUID
+    filename: str
+    trash_relative_path: str
+    remaining_pages: int
+    next_page_index: int | None
