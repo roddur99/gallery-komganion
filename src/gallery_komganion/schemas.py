@@ -39,3 +39,18 @@ class GalleryListResponse(ApiModel):
     total: int
     limit: int
     offset: int
+
+
+class PageSummary(ApiModel):
+    page_index: int
+    filename: str
+    size_bytes: int
+    mime_type: str
+    width: int | None
+    height: int | None
+    image_url: str
+
+
+class PageListResponse(ApiModel):
+    gallery_id: UUID
+    items: list[PageSummary]

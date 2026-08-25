@@ -5,15 +5,27 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from gallery_komganion.dependencies import get_session
-from gallery_komganion.models import Gallery, GalleryStatus
+from gallery_komganion.filesystem.containment import (
+    UnsafePathError,
+    safe_join,
+)
+from gallery_komganion.models import (
+    Gallery,
+    GalleryRoot,
+    GalleryStatus,
+    Page,
+)
 from gallery_komganion.schemas import (
     GalleryDetail,
     GalleryListResponse,
     GallerySummary,
+    PageListResponse,
+    PageSummary,
 )
 
 router = APIRouter(
@@ -51,6 +63,41 @@ def _gallery_summary(gallery: Gallery) -> GallerySummary:
         status=gallery.status.value,
         can_delete=gallery.status == GalleryStatus.ACTIVE,
     )
+
+
+def _get_readable_gallery(
+    session: Session,
+    gallery_id: UUID,
+) -> tuple[Gallery, GalleryRoot]:
+    gallery = session.get(Gallery, gallery_id)
+
+    if gallery is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Gallery not found",
+        )
+
+    if gallery.status != GalleryStatus.ACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Gallery is not currently available",
+        )
+
+    root = session.get(GalleryRoot, gallery.root_id)
+
+    if root is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Gallery root record is unavailable",
+        )
+
+    if not root.available:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Gallery root is currently offline",
+        )
+
+    return gallery, root
 
 
 def _escape_like(value: str) -> str:
@@ -143,4 +190,105 @@ def get_gallery(
     return GalleryDetail(
         **summary.model_dump(),
         last_scanned_at=gallery.last_scanned_at,
+    )
+
+
+@router.get(
+    "/{gallery_id}/pages",
+    response_model=PageListResponse,
+)
+def list_gallery_pages(
+    gallery_id: UUID,
+    session: SessionDependency,
+) -> PageListResponse:
+    gallery, _ = _get_readable_gallery(
+        session,
+        gallery_id,
+    )
+
+    pages = session.scalars(
+        select(Page).where(Page.gallery_id == gallery.id).order_by(Page.page_index)
+    ).all()
+
+    return PageListResponse(
+        gallery_id=gallery.id,
+        items=[
+            PageSummary(
+                page_index=page.page_index,
+                filename=page.relative_path,
+                size_bytes=page.size_bytes,
+                mime_type=page.mime_type,
+                width=page.width,
+                height=page.height,
+                image_url=(f"/api/v1/galleries/{gallery.id}/pages/{page.page_index}"),
+            )
+            for page in pages
+        ],
+    )
+
+
+@router.get(
+    "/{gallery_id}/pages/{page_index}",
+    response_class=FileResponse,
+)
+def stream_gallery_page(
+    gallery_id: UUID,
+    page_index: int,
+    session: SessionDependency,
+) -> FileResponse:
+    if page_index < 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Page not found",
+        )
+
+    gallery, root = _get_readable_gallery(
+        session,
+        gallery_id,
+    )
+
+    page = session.scalar(
+        select(Page).where(
+            Page.gallery_id == gallery.id,
+            Page.page_index == page_index,
+        )
+    )
+
+    if page is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Page not found",
+        )
+
+    if gallery.relative_path == ".":
+        stored_path = page.relative_path
+    else:
+        stored_path = f"{gallery.relative_path}/{page.relative_path}"
+
+    try:
+        image_path = safe_join(
+            root.path,
+            stored_path,
+            must_exist=True,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Indexed image file was not found",
+        ) from exc
+    except (UnsafePathError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Indexed image path is unsafe or unavailable",
+        ) from exc
+
+    if not image_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Indexed page is not a file",
+        )
+
+    return FileResponse(
+        path=image_path,
+        media_type=page.mime_type,
     )
