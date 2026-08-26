@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
+import secrets
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 CONFIG_PATH_ENVIRONMENT_VARIABLE = "GALLERY_KOMGANION_CONFIG_PATH"
 
@@ -17,6 +19,12 @@ class ServerConfig(BaseModel):
 
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
+
+
+class SecurityConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_token: SecretStr | None = None
 
 
 class StorageConfig(BaseModel):
@@ -40,6 +48,7 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     server: ServerConfig = ServerConfig()
+    security: SecurityConfig = SecurityConfig()
     storage: StorageConfig = StorageConfig()
     gallery_roots: list[GalleryRootConfig] = Field(default_factory=list)
 
@@ -139,6 +148,78 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
 
     parsed_config = AppConfig.model_validate(raw_config)
     return _resolve_config_paths(parsed_config, path.parent)
+
+
+def create_default_config(config_path: str | Path) -> AppConfig:
+    path = Path(config_path).expanduser().resolve(strict=False)
+    data_directory = path.parent / "data"
+
+    return AppConfig(
+        security=SecurityConfig(
+            api_token=SecretStr(secrets.token_urlsafe(32)),
+        ),
+        storage=StorageConfig(
+            database_path=data_directory / "gallery-komganion.sqlite3",
+            thumbnail_directory=data_directory / "thumbnails",
+        ),
+    )
+
+
+def _toml_string(value: object) -> str:
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def save_config(config: AppConfig, config_path: str | Path) -> AppConfig:
+    path = Path(config_path).expanduser().resolve(strict=False)
+    resolved = _resolve_config_paths(config, path.parent)
+    token = resolved.security.api_token
+    token_value = token.get_secret_value() if token is not None else ""
+
+    lines = [
+        "[server]",
+        f"host = {_toml_string(resolved.server.host)}",
+        f"port = {resolved.server.port}",
+        "",
+        "[security]",
+        f"api_token = {_toml_string(token_value)}",
+        "",
+        "[storage]",
+        f"database_path = {_toml_string(resolved.storage.database_path.as_posix())}",
+        (
+            "thumbnail_directory = "
+            f"{_toml_string(resolved.storage.thumbnail_directory.as_posix())}"
+        ),
+    ]
+
+    for root in resolved.gallery_roots:
+        lines.extend(
+            [
+                "",
+                "[[gallery_roots]]",
+                f"id = {_toml_string(root.id)}",
+                f"name = {_toml_string(root.name)}",
+                f"path = {_toml_string(root.path.as_posix())}",
+                f"trash_path = {_toml_string(root.trash_path.as_posix())}",
+                f"enabled = {str(root.enabled).lower()}",
+            ]
+        )
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    temporary_path.replace(path)
+
+    return resolved
+
+
+def load_or_create_config(config_path: str | Path) -> AppConfig:
+    path = Path(config_path).expanduser().resolve(strict=False)
+
+    if path.exists():
+        return load_config(path)
+
+    config = create_default_config(path)
+    return save_config(config, path)
 
 
 def check_root_availability(root: GalleryRootConfig) -> RootAvailability:
