@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import queue
 import secrets
 import threading
@@ -27,6 +28,7 @@ from gallery_komganion.control import (
     default_config_path,
     scan_config,
 )
+from gallery_komganion.security import API_TOKEN_ENVIRONMENT_VARIABLE
 
 
 class RootDialog(tk.Toplevel):
@@ -184,9 +186,12 @@ class ControlPanel:
         self.host_variable = tk.StringVar(value=self.config.server.host)
         self.port_variable = tk.StringVar(value=str(self.config.server.port))
         configured_token = self.config.security.api_token
-        self.token_variable = tk.StringVar(
-            value=configured_token.get_secret_value() if configured_token else ""
-        )
+        effective_token = os.environ.get(API_TOKEN_ENVIRONMENT_VARIABLE)
+
+        if effective_token is None and configured_token is not None:
+            effective_token = configured_token.get_secret_value()
+
+        self.token_variable = tk.StringVar(value=effective_token or "")
         self.show_token_variable = tk.BooleanVar(value=False)
         self.status_variable = tk.StringVar(value="Stopped")
         self.summary_variable = tk.StringVar(value="Ready")
