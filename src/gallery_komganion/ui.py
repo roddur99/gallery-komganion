@@ -132,12 +132,14 @@ class RootDialog(tk.Toplevel):
 
     def _save(self) -> None:
         try:
-            gallery_path = Path(self.path_variable.get().strip()).expanduser().resolve(
-                strict=False
-            )
-            trash_path = Path(self.trash_variable.get().strip()).expanduser().resolve(
-                strict=False
-            )
+            gallery_value = self.path_variable.get().strip()
+            trash_value = self.trash_variable.get().strip()
+
+            if not gallery_value or not trash_value:
+                raise ValueError("Gallery and trash folders are required")
+
+            gallery_path = Path(gallery_value).expanduser().resolve(strict=False)
+            trash_path = Path(trash_value).expanduser().resolve(strict=False)
             resolved = GalleryRootConfig(
                 id=self._root_id,
                 name=self.name_variable.get().strip(),
@@ -262,7 +264,7 @@ class ControlPanel:
         self.token_entry.grid(
             row=1,
             column=1,
-            columnspan=5,
+            columnspan=4,
             padx=(4, 12),
             pady=(10, 0),
             sticky="ew",
@@ -272,12 +274,18 @@ class ControlPanel:
             text="Show",
             variable=self.show_token_variable,
             command=self._toggle_token_visibility,
-        ).grid(row=1, column=6, pady=(10, 0), sticky="w")
+        ).grid(row=1, column=5, pady=(10, 0), sticky="w")
+        self.generate_token_button = ttk.Button(
+            server_frame,
+            text="Generate",
+            command=self._generate_token,
+        )
+        self.generate_token_button.grid(row=1, column=6, pady=(10, 0), sticky="ew")
         ttk.Button(
             server_frame,
             text="Copy",
             command=self._copy_token,
-        ).grid(row=1, column=7, pady=(10, 0), sticky="ew")
+        ).grid(row=1, column=7, padx=(8, 0), pady=(10, 0), sticky="ew")
 
         roots_header = ttk.Frame(outer)
         roots_header.grid(row=1, column=0, pady=(12, 6), sticky="ew")
@@ -426,10 +434,14 @@ class ControlPanel:
 
     def _build_config(self) -> AppConfig:
         token = self.token_variable.get().strip()
+        host = self.host_variable.get().strip()
+
+        if not host:
+            raise ValueError("The server host is required")
 
         return AppConfig(
             server=ServerConfig(
-                host=self.host_variable.get().strip(),
+                host=host,
                 port=int(self.port_variable.get()),
             ),
             security=SecurityConfig(
@@ -566,6 +578,7 @@ class ControlPanel:
             self.host_entry,
             self.port_entry,
             self.token_entry,
+            self.generate_token_button,
             self.add_button,
             self.edit_button,
             self.remove_button,
@@ -586,6 +599,10 @@ class ControlPanel:
         self.token_entry.configure(
             show="" if self.show_token_variable.get() else "•"
         )
+
+    def _generate_token(self) -> None:
+        self.token_variable.set(secrets.token_urlsafe(32))
+        self.summary_variable.set("New API token generated; save configuration")
 
     def _copy_token(self) -> None:
         self.window.clipboard_clear()
