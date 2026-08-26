@@ -8,6 +8,8 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from gallery_komganion.config import load_config
+
 API_TOKEN_ENVIRONMENT_VARIABLE = "GALLERY_KOMGANION_API_TOKEN"
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -18,7 +20,13 @@ def get_api_token() -> str:
     token = os.environ.get(API_TOKEN_ENVIRONMENT_VARIABLE)
 
     if token is None:
-        raise RuntimeError(f"{API_TOKEN_ENVIRONMENT_VARIABLE} is not configured")
+        configured_token = load_config().security.api_token
+        token = configured_token.get_secret_value() if configured_token is not None else None
+
+    if token is None:
+        raise RuntimeError(
+            f"{API_TOKEN_ENVIRONMENT_VARIABLE} or security.api_token must be configured"
+        )
 
     if len(token) < 32:
         raise RuntimeError(f"{API_TOKEN_ENVIRONMENT_VARIABLE} must contain at least 32 characters")
