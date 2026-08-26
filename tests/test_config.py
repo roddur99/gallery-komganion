@@ -2,12 +2,18 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from gallery_komganion.config import (
     CONFIG_PATH_ENVIRONMENT_VARIABLE,
+    AppConfig,
+    GalleryRootConfig,
+    SecurityConfig,
+    StorageConfig,
     check_root_availability,
     load_config,
+    load_or_create_config,
+    save_config,
 )
 
 ROOT_ID = "55280de7-869f-4898-b48b-dc519de969bc"
@@ -134,3 +140,45 @@ def test_available_root_is_reported(tmp_path: Path) -> None:
 
     assert availability.available is True
     assert availability.error is None
+
+
+def test_save_config_round_trips_desktop_settings(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    token = "desktop-token-that-is-longer-than-32-characters"
+    config = AppConfig(
+        security=SecurityConfig(api_token=SecretStr(token)),
+        storage=StorageConfig(
+            database_path=tmp_path / "data" / "database.sqlite3",
+            thumbnail_directory=tmp_path / "data" / "thumbnails",
+        ),
+        gallery_roots=[
+            GalleryRootConfig(
+                id=UUID(ROOT_ID),
+                name="Saved Galleries",
+                path=tmp_path / "galleries",
+                trash_path=tmp_path / "trash",
+            )
+        ],
+    )
+
+    save_config(config, config_path)
+    loaded = load_config(config_path)
+
+    assert loaded.security.api_token is not None
+    assert loaded.security.api_token.get_secret_value() == token
+    assert loaded.gallery_roots[0].name == "Saved Galleries"
+    assert loaded.gallery_roots[0].path == (tmp_path / "galleries").resolve()
+    assert not (tmp_path / ".config.toml.tmp").exists()
+
+
+def test_load_or_create_config_generates_desktop_defaults(tmp_path: Path) -> None:
+    config_path = tmp_path / "app-data" / "config.toml"
+
+    config = load_or_create_config(config_path)
+
+    assert config_path.exists()
+    assert config.security.api_token is not None
+    assert len(config.security.api_token.get_secret_value()) >= 32
+    assert config.storage.database_path == (
+        config_path.parent / "data" / "gallery-komganion.sqlite3"
+    ).resolve()
