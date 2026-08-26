@@ -102,8 +102,7 @@ def scan_config(
             indexed_pages += result.indexed_pages
 
             root_errors = [
-                f"{root.name}: {error.relative_path}: {error.message}"
-                for error in discovery.errors
+                f"{root.name}: {error.relative_path}: {error.message}" for error in discovery.errors
             ]
             root_errors.extend(f"{root.name}: {message}" for message in result.errors)
 
@@ -173,6 +172,7 @@ class ServerController:
                 host=config.server.host,
                 port=config.server.port,
                 log_level="info",
+                use_colors=False,
             )
             server = uvicorn.Server(uvicorn_config)
             server.install_signal_handlers = lambda: None
