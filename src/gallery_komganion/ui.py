@@ -132,17 +132,35 @@ class RootDialog(tk.Toplevel):
 
     def _save(self) -> None:
         try:
-            candidate = GalleryRootConfig(
+            gallery_path = Path(self.path_variable.get().strip()).expanduser().resolve(
+                strict=False
+            )
+            trash_path = Path(self.trash_variable.get().strip()).expanduser().resolve(
+                strict=False
+            )
+            resolved = GalleryRootConfig(
                 id=self._root_id,
                 name=self.name_variable.get().strip(),
-                path=Path(self.path_variable.get().strip()),
-                trash_path=Path(self.trash_variable.get().strip()),
+                path=gallery_path,
+                trash_path=trash_path,
                 enabled=self.enabled_variable.get(),
             )
-            validated = AppConfig(gallery_roots=[candidate])
-            temporary_path = Path.cwd() / "config.toml"
-            resolved = save_config(validated, temporary_path).gallery_roots[0]
-            temporary_path.unlink(missing_ok=True)
+
+            if gallery_path == trash_path:
+                raise ValueError("The gallery and trash folders must be different")
+
+            if trash_path.is_relative_to(gallery_path):
+                raise ValueError("The trash folder cannot be inside the gallery folder")
+
+            if gallery_path.is_relative_to(trash_path):
+                raise ValueError("The gallery folder cannot be inside the trash folder")
+
+            if (
+                gallery_path.drive
+                and trash_path.drive
+                and gallery_path.drive.casefold() != trash_path.drive.casefold()
+            ):
+                raise ValueError("The gallery and trash folders must be on the same drive")
         except (OSError, ValueError, ValidationError) as exc:
             messagebox.showerror("Invalid gallery root", str(exc), parent=self)
             return
