@@ -43,6 +43,11 @@ def application_data_directory() -> Path:
 
 
 def default_config_path() -> Path:
+    configured_path = os.environ.get(CONFIG_PATH_ENVIRONMENT_VARIABLE)
+
+    if configured_path:
+        return Path(configured_path).expanduser().resolve(strict=False)
+
     return application_data_directory() / "config.toml"
 
 
