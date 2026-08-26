@@ -24,12 +24,18 @@ dependencies = [
 [project.scripts]
 gallery-komganion = "gallery_komganion.cli:main"
 
+[project.gui-scripts]
+gallery-komganion-ui = "gallery_komganion.ui:main"
+
 [project.optional-dependencies]
 dev = [
     "httpx2",
     "pytest",
     "pytest-cov",
     "ruff",
+]
+packaging = [
+    "pyinstaller>=6.0",
 ]
 
 [tool.setuptools.packages.find]
