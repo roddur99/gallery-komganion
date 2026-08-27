@@ -2,6 +2,9 @@
 host = "127.0.0.1"
 port = 8000
 
+[security]
+api_token = "replace-with-a-random-token-at-least-32-characters"
+
 [storage]
 database_path = "./data/gallery-komganion.sqlite3"
 thumbnail_directory = "./data/thumbnails"
