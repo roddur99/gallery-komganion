@@ -6,7 +6,20 @@ Gallery Komganion is a lightweight, self-hosted image-gallery server for the
 It indexes ordinary folders containing images and exposes them through an authenticated API
 without requiring those folders to be converted into CBZ archives.
 
-> “Komganion” is a deliberately silly play on “companion.”
+> “Komganion” is a deliberately silly play on “companion.” (Komga's)
+
+## Download
+
+Download the latest Windows release from the
+[GitHub Releases page](https://github.com/roddur99/gallery-komganion/releases/latest).
+
+1. Download `Gallery-Komganion-v0.1.0-windows-x64.zip`.
+2. Extract the entire ZIP.
+3. Run `Gallery Komganion\Gallery Komganion.exe`.
+
+Keep all extracted files together. Windows SmartScreen may warn about the
+unsigned personal application; choose **More info** and **Run anyway** if you
+built or downloaded it from this repository.
 
 ## Features
 
