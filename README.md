@@ -6,7 +6,7 @@ Gallery Komganion is a lightweight, self-hosted image-gallery server for the
 It indexes ordinary folders containing images and exposes them through an authenticated API
 without requiring those folders to be converted into CBZ archives.
 
-> “Komganion” is a deliberately silly play on “companion.” (Komga's)
+> And yeah, “Komganion” is a dumb play on “companion.” (Komga's)
 
 ## Download
 
